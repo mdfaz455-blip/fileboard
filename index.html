@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FileBoard</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 system-ui,sans-serif;background:#f4f5f5;color:#1c2b2b}
+header{background:#00917c;color:#fff;padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}
+header b{font-size:20px}header a{color:#e8fffb;margin-left:10px;cursor:pointer;text-decoration:underline}
+main{padding:10px;max-width:1100px;margin:auto}
+.box{background:#fff;border:1px solid #d5dcdc;border-radius:6px;padding:12px;margin-bottom:12px}
+fieldset{border:1px solid #c9d2d2;border-radius:4px;margin:0 0 10px;padding:8px}legend{font-size:12px;color:#456}
+input,select,textarea,button{font:inherit;padding:9px;width:100%;margin:4px 0;border:1px solid #9aa;border-radius:4px;background:#fff}
+button{background:#00917c;color:#fff;border:0;cursor:pointer;width:auto;padding:9px 16px}
+button.alt{background:#dde;color:#223}button.del{background:#c0392b}
+.days a{display:inline-block;background:#12124a;color:#fff;padding:3px 8px;margin:2px;border-radius:3px;cursor:pointer}
+.days a.on{background:#0a58ca}.days a.today{outline:2px solid #00917c}
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
+table{border-collapse:collapse;width:100%}th{background:#e7eeee;text-align:left}
+td,th{padding:6px;border-bottom:1px solid #e0e6e6;vertical-align:top;font-size:13px}
+.wrap{overflow-x:auto}.tag{padding:1px 6px;border-radius:9px;font-size:12px;background:#eee}
+tr.Urgent{background:#ffe3df}tr.High{background:#fff6d9}.s-Done,.s-Paid{background:#d6f5df}.s-Problem{background:#ffd9d4}
+.msg{background:#fffbe0;border:1px solid #e6dc8a;padding:8px;margin-bottom:10px;border-radius:4px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}a.l{color:#0a58ca;cursor:pointer;text-decoration:underline}
+td select{width:auto;padding:3px;margin:0}.ck{width:auto}
+</style></head><body><div id="app"></div>
+<script>
+const CENTERS=["Chittagong","Dhaka (JFP)","Khulna","Rajshahi","Sylhet"];
+const VISAS=["Business","Double Entry","Medical","Student","Tourist","Transit","Entry","Miscellaneous","Others"];
+const PRI=["Normal","High","Urgent"],ST=["New","Processing","Appointment booked","Paid","Done","Problem"];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);
+const today=iso(new Date());
+let S;try{S=JSON.parse(localStorage.getItem('fb')||'null')}catch(e){S=null}
+S=S||{users:[],files:[],next:1};
+const save=()=>{try{localStorage.setItem('fb',JSON.stringify(S))}catch(e){alert('Storage full or blocked: export a backup and clear old files.')}};
+async function hash(p,salt){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(salt+':'+p));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+const idb=()=>new Promise((res,rej)=>{const r=indexedDB.open('fbdocs',1);r.onupgradeneeded=()=>r.result.createObjectStore('d',{keyPath:'id',autoIncrement:true});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const dbop=async(m,...a)=>{const d=await idb();return new Promise((res,rej)=>{const q=d.transaction('d',m==='get'?'readonly':'readwrite').objectStore('d')[m](...a);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})};
+let me=sessionStorage.getItem('me'),V={page:'dash',day:today,f:{},edit:null,up:null},msg='';
+const cur=()=>S.users.find(u=>u.u===me);
+const flash=m=>{msg=m};
+
+function layout(body){const u=cur();
+return`<header><b>FileBoard</b><div>${u?`<a data-go=dash>Files</a><a data-go=add>+ New file</a>${u.role==='admin'?'<a data-go=users>Agents</a>':''}<a data-go=backup>Backup</a><b style="margin-left:10px">${esc(u.u)}</b><a data-go=pw>Change password</a><a data-go=logout>Logout</a>`:''}</div></header>
+<main>${msg?`<div class=msg>${esc(msg)}</div>`:''}${body}</main>`}
+
+function loginView(setup){return layout(`<form class=box style="max-width:360px" data-form="${setup?'setup':'login'}">
+${setup?'<h3>First-time setup</h3><p>Create the admin account for this browser.</p>':''}
+<input name=u placeholder="User Name" required autofocus><input name=p type=password placeholder="Password${setup?' (min 8)':''}" ${setup?'minlength=8':''} required>
+<button style="width:100%">${setup?'Create admin':'Login'}</button></form>`)}
+
+function dashView(){const u=cur(),f=V.f,[y,m]=V.day.split('-').map(Number),n=new Date(y,m,0).getDate();
+let rows=S.files.filter(r=>r.day===V.day&&(u.role==='admin'||r.u===u.u));
+for(const k of['center','visa','pri','st'])if(f[k])rows=rows.filter(r=>r[k]===f[k]);
+if(f.agent&&u.role==='admin')rows=rows.filter(r=>r.u===f.agent);
+if(f.q){const q=f.q.toLowerCase();rows=rows.filter(r=>[r.name,r.phone,r.nos].join(' ').toLowerCase().includes(q))}
+rows.sort((a,b)=>PRI.indexOf(b.pri)-PRI.indexOf(a.pri)||b.id-a.id);
+const sel=(k,all,list)=>`<select data-f=${k}><option value="">${all}</option>${list.map(x=>`<option ${f[k]===x?'selected':''}>${esc(x)}</option>`).join('')}</select>`;
+const pm=new Date(y,m-2,1),nm=new Date(y,m,1);
+return layout(`<div class=box><div class=days>${Array.from({length:n},(_,i)=>{const d=`${y}-${String(m).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`;return`<a data-day=${d} class="${d===V.day?'on':''} ${d===today?'today':''}">${String(i+1).padStart(2,'0')}</a>`}).join('')}</div>
+<div style="margin-top:6px"><a class=l data-day=${iso(pm)}>&laquo; previous</a> &nbsp;<b>${new Date(y,m-1,1).toLocaleString('en',{month:'long',year:'numeric'})}</b>&nbsp; <a class=l data-day=${iso(nm)}>next &raquo;</a></div></div>
+<div class=box><div class=filters>${sel('center','- All Centers -',CENTERS)}${sel('visa','- All Visa Types -',VISAS)}${sel('pri','- All Files -',PRI)}${sel('st','- All Status -',ST)}
+${u.role==='admin'?sel('agent','- All Agents -',S.users.map(x=>x.u)):''}<input data-f=q value="${esc(f.q||'')}" placeholder="Search name / phone / file no."></div>
+<p>Files on ${V.day}: <b>${rows.length}</b> &nbsp; Done: <b>${rows.filter(r=>r.st==='Done').length}</b> &nbsp; People: <b>${rows.reduce((a,r)=>a+(+r.people||0),0)}</b></p></div>
+<div class="box wrap"><div class=row2 style="max-width:520px"><input type=date id=tgt value="${today}"><span><button class=alt data-bulk=copy>Copy to date</button> <button class=del data-bulk=delete>Delete</button></span></div>
+<table><tr><th><input type=checkbox class=ck data-all></th><th>#</th><th>Client</th><th>File nos.</th><th>People</th><th>Center</th><th>Visa</th><th>Docs</th><th>Status</th><th>Agent</th></tr>
+${rows.map((r,i)=>`<tr class="${r.pri}"><td><input type=checkbox class="ck rk" value=${r.id}></td><td>${i+1}</td>
+<td><b>${esc(r.name)}</b><br>${esc(r.phone)}<br>${esc(r.email)}<br><small>Ref: ${esc(r.ref)||'-'}</small>${r.notes?`<br><small>${esc(r.notes)}</small>`:''}</td>
+<td style="white-space:pre-line">${esc(r.nos)}</td><td>${r.people}</td><td>${esc(r.center)}</td><td>${esc(r.visa)}</td>
+<td>${(r.docs||[]).map(d=>`<a class=l data-doc=${d.id}>${esc(d.label)}</a>`).join('<br>')}<br><a class=l data-up=${r.id}>+ upload</a></td>
+<td><span class="tag s-${r.st}">${r.st}</span><br><select data-st=${r.id}><option value="">change...</option>${ST.map(s=>`<option>${s}</option>`).join('')}</select><br><a class=l data-edit=${r.id}>edit</a></td>
+<td>${esc(r.u)}<br><small>${r.t||''}</small></td></tr>`).join('')||`<tr><td colspan=10>No files for this date. <a class=l data-go=add>Add the first one.</a></td></tr>`}</table></div>`)}
+
+function formView(){const r=V.edit?S.files.find(x=>x.id===V.edit):{},o=(list,v)=>list.map(x=>`<option ${v===x?'selected':''}>${x}</option>`).join('');
+return layout(`<form class=box data-form=file><h3>${V.edit?'Edit file':'New file'}</h3>
+<fieldset><legend>Center / visa type / date</legend><div class=row2><select name=center required><option value="">- Select Center -</option>${o(CENTERS,r.center)}</select>
+<select name=visa required><option value="">- Select Visa Type -</option>${o(VISAS,r.visa)}</select></div>
+<div class=row2><input type=date name=day value="${r.day||today}" required><select name=pri>${o(PRI,r.pri)}</select></div></fieldset>
+<fieldset><legend>Client</legend><input name=name placeholder="Full name" value="${esc(r.name)}" required><input name=phone placeholder="Phone" value="${esc(r.phone)}" required>
+<input name=email type=email placeholder="Email" value="${esc(r.email)}"><input name=people type=number min=1 value="${r.people||1}">
+<textarea name=nos rows=3 placeholder="Web file numbers, one per line">${esc(r.nos)}</textarea></fieldset>
+<fieldset><legend>Reference</legend><input name=ref placeholder="Payment / agent reference phone" value="${esc(r.ref)}"><textarea name=notes rows=2 placeholder="Notes">${esc(r.notes)}</textarea></fieldset>
+<button>Save file</button></form>`)}
+
+function upView(){const r=S.files.find(x=>x.id===V.up);return layout(`<form class=box data-form=upload><h3>Upload files for ${esc(r.name)}</h3>
+${['Primary applicant web file','Other applicant 1','Other applicant 2','Other applicant 3'].map((l,i)=>`<label>${l}</label><input type=file name=f${i} accept=".pdf,.jpg,.jpeg,.png">`).join('')}<button>Upload</button></form>`)}
+
+function usersView(){return layout(`<div class=box><h3>Agents</h3><table>${S.users.map(u=>`<tr><td>${esc(u.u)}</td><td>${u.role}</td><td>${u.role==='admin'?'':`<button class=del data-rmu="${esc(u.u)}">Remove</button>`}</td></tr>`).join('')}</table></div>
+<form class=box data-form=adduser><h3>Add agent</h3><input name=u placeholder="User name" required><input name=p type=password minlength=8 placeholder="Password (min 8)" required><button>Add agent</button></form>`)}
+
+const pwView=()=>layout(`<form class="box" style="max-width:340px" data-form=pw><h3>Change password</h3><input name=o type=password placeholder="Current password" required><input name=n type=password minlength=8 placeholder="New password (min 8)" required><button>Save</button></form>`);
+const backupView=()=>layout(`<div class=box><h3>Backup</h3><p>Data lives only in this browser. Export a backup regularly; import it to move to another phone or computer (uploaded documents are not included).</p>
+<button data-exp>Export backup</button> <label class=l>Import backup<input type=file id=imp accept=".json" style="display:none"></label></div>`);
+
+function render(){let h;if(!S.users.length)h=loginView(true);else if(!cur())h=loginView();
+else h={dash:dashView,add:formView,users:usersView,pw:pwView,backup:backupView,up:upView}[V.page]();
+document.getElementById('app').innerHTML=h;msg=''}
+const go=(p,x={})=>{V={...V,page:p,edit:null,up:null,...x};render()};
+
+document.addEventListener('submit',async e=>{e.preventDefault();const k=e.target.dataset.form,F=Object.fromEntries(new FormData(e.target));
+if(k==='setup'){const s=crypto.randomUUID();S.users.push({u:F.u.trim(),s,h:await hash(F.p,s),role:'admin'});save();me=F.u.trim();sessionStorage.setItem('me',me);V.page='dash'}
+else if(k==='login'){const u=S.users.find(x=>x.u===F.u.trim());if(u&&u.h===await hash(F.p,u.s)){me=u.u;sessionStorage.setItem('me',me);V.page='dash'}else flash('Wrong user name or password.')}
+else if(k==='file'){const rec={day:F.day,center:F.center,visa:F.visa,pri:F.pri,name:F.name.trim(),phone:F.phone.trim(),email:F.email.trim(),people:Math.max(1,+F.people||1),nos:F.nos.trim(),ref:F.ref.trim(),notes:F.notes.trim()};
+ if(V.edit)Object.assign(S.files.find(x=>x.id===V.edit),rec);else S.files.push({...rec,id:S.next++,st:'New',u:me,docs:[],t:new Date().toTimeString().slice(0,5)});
+ save();V.day=F.day;V.page='dash';V.edit=null;flash('File saved.')}
+else if(k==='upload'){const r=S.files.find(x=>x.id===V.up);let n=0;const labels=['Primary','Other 1','Other 2','Other 3'];
+ for(let i=0;i<4;i++){const f=e.target['f'+i].files[0];if(!f)continue;if(!/\.(pdf|jpe?g|png)$/i.test(f.name)){flash(f.name+': only PDF/JPG/PNG allowed.');continue}
+  const id=await dbop('add',{blob:f,name:f.name});r.docs.push({id,label:labels[i]});n++}
+ save();V.page='dash';if(!msg)flash(n+' file(s) uploaded.')}
+else if(k==='adduser'){if(S.users.some(x=>x.u===F.u.trim()))flash('That user name already exists.');else{const s=crypto.randomUUID();S.users.push({u:F.u.trim(),s,h:await hash(F.p,s),role:'agent'});save();flash('Agent added.')}}
+else if(k==='pw'){const u=cur();if(u.h===await hash(F.o,u.s)){u.s=crypto.randomUUID();u.h=await hash(F.n,u.s);save();V.page='dash';flash('Password changed.')}else flash('Current password is wrong.')}
+render()});
+
+document.addEventListener('click',async e=>{const t=e.target,d=t.dataset||{};
+if(d.go){if(d.go==='logout'){me=null;sessionStorage.removeItem('me');render()}else go(d.go)}
+else if(d.day){V.day=d.day;render()}
+else if(d.edit)go('add',{edit:+d.edit});
+else if(d.up)go('up',{up:+d.up});
+else if(d.doc){const rec=await dbop('get',+d.doc);if(rec){const a=document.createElement('a');a.href=URL.createObjectURL(rec.blob);a.download=rec.name;a.click()}}
+else if(d.bulk){const ids=[...document.querySelectorAll('.rk:checked')].map(c=>+c.value);if(!ids.length)return;
+ if(d.bulk==='delete'){if(!confirm('Delete selected files?'))return;for(const id of ids){const r=S.files.find(x=>x.id===id);for(const dd of r.docs||[])await dbop('delete',dd.id)}S.files=S.files.filter(x=>!ids.includes(x.id))}
+ else{const tg=document.getElementById('tgt').value;for(const id of ids){const r=S.files.find(x=>x.id===id);S.files.push({...r,id:S.next++,day:tg,st:'New',docs:[]})}}
+ save();flash(ids.length+' file(s) updated.');render()}
+else if(d.rmu){if(confirm('Remove agent?')){S.users=S.users.filter(x=>x.u!==d.rmu);save();render()}}
+else if(d.exp!==undefined){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'}));a.download='fileboard-backup-'+today+'.json';a.click()}
+else if('all' in d){document.querySelectorAll('.rk').forEach(c=>c.checked=t.checked)}});
+
+document.addEventListener('change',async e=>{const t=e.target,d=t.dataset;
+if(d.f){V.f[d.f]=t.value;render()}
+else if(d.st&&t.value){S.files.find(x=>x.id===+d.st).st=t.value;save();render()}
+else if(t.id==='imp'&&t.files[0]){try{const j=JSON.parse(await t.files[0].text());if(!Array.isArray(j.users)||!Array.isArray(j.files))throw 0;
+ if(confirm('Replace all data in this browser with the backup?')){S=j;save();me=null;sessionStorage.removeItem('me');flash('Backup imported. Please log in.')}}catch(x){flash('Not a valid backup file.')}render()}});
+document.addEventListener('input',e=>{if(e.target.dataset.f==='q'){V.f.q=e.target.value;const p=e.target.selectionStart;render();const i=document.querySelector('[data-f=q]');i.focus();i.setSelectionRange(p,p)}});
+render();
+</script></body></html>
